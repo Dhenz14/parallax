@@ -1,0 +1,44 @@
+# capabilities.yaml — Parallax (Dhenz14 fork of GradientHQ/parallax)
+# Registers operator-visible surfaces for the HiveAI unified capability registry.
+# Organ: circulatory.compute_pool (distributed pipeline-parallel inference = compute-pool organ)
+# Source: README.md + pyproject.toml + src/parallax + scripts
+
+- name: parallax-cli
+  organ: circulatory.compute_pool
+  surface_type: cli_command
+  surface_path: parallax
+  description: Console entry point (pyproject.toml [project.scripts] parallax = parallax.cli:main). Launches the decentralized pipeline-parallel LLM inference engine — builds an AI cluster across a set of distributed nodes despite varying configuration and physical location. Trusted by SGLang, vLLM, Qwen, DeepSeek, Kimi, MiniMax, Z AI.
+  status: LIVE
+  source_file: src/parallax/cli.py
+
+- name: pipeline-parallel-serving
+  organ: circulatory.compute_pool
+  surface_type: library_function
+  surface_path: src/parallax
+  description: Pipeline-parallel model sharding across heterogeneous distributed nodes. Backends — SGLang and vLLM on GPU, MLX LM on Mac. Paged KV cache management and continuous batching for Mac. Dynamic request scheduling and routing for high performance. Cross-platform (Linux GPU + macOS).
+  status: LIVE
+  source_file: src/parallax
+
+- name: lattica-p2p-transport
+  organ: circulatory.compute_pool
+  surface_type: library_function
+  surface_path: src/parallax
+  description: P2P communication layer powered by Lattica (lattica==1.0.21). Carries pipeline-parallel activations between distributed inference nodes without a central coordinator. Foundation for sovereign / fully-decentralized model serving.
+  status: LIVE
+  source_file: src/parallax
+
+- name: model-shard-downloader
+  organ: circulatory.compute_pool
+  surface_type: cli_command
+  surface_path: scripts/download_shard.py
+  description: Downloads a specific shard of a model from HuggingFace for the local node to serve. Companion shell wrapper at scripts/download_model_shard.sh. Required before joining a distributed inference cluster.
+  status: LIVE
+  source_file: scripts/download_shard.py
+
+- name: openclaw-integration
+  organ: circulatory.compute_pool
+  surface_type: library_function
+  surface_path: docs/user_guide/work_with_openclaw.md
+  description: OpenClaw integration shipped 2026/2 — extends Parallax distributed serving to coordinate with OpenClaw clusters. Documented in user guide; supported models include DeepSeek-V3.2/R1, MiniMax-M2.1 (230B/10B-active MoE), GLM-4.7, Kimi-K2 (256k context, native INT4), Qwen3-Next/3/2.5, gpt-oss 20B/120B, Meta Llama 3.x.
+  status: LIVE
+  source_file: docs/user_guide/work_with_openclaw.md
