@@ -11,6 +11,10 @@ Start the router with:
 
 import argparse
 import asyncio
+import ipaddress
+import os
+import secrets
+import socket
 import time
 import uuid
 from collections import deque
@@ -18,10 +22,11 @@ from contextlib import asynccontextmanager
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, AsyncIterator, Callable, Dict, List, Optional, Tuple, get_args
+from urllib.parse import urlparse, urlunparse
 
 import httpx
 import uvicorn
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 
@@ -41,6 +46,125 @@ SUPPORTED_STRATEGIES: Tuple[str, ...] = tuple(get_args(StrategyName))
 MAX_REQUEST_SAMPLES = 1000
 THROUGHPUT_HISTORY_SEC = 3600
 THROUGHPUT_DISPLAY_LAG_SEC = 3
+ADMIN_TOKEN_ENV = "PARALLAX_ROUTER_ADMIN_TOKEN"
+ADMIN_TOKEN_HEADER = "x-parallax-admin-token"
+ALLOW_LINK_LOCAL_ENV = "PARALLAX_ROUTER_ALLOW_LINK_LOCAL_ENDPOINTS"
+DEFAULT_CORS_ORIGINS = ("http://127.0.0.1:8081", "http://localhost:8081")
+
+
+def _env_csv(name: str, default: Tuple[str, ...]) -> List[str]:
+    raw = os.environ.get(name)
+    if raw is None:
+        return list(default)
+    values = [part.strip() for part in raw.split(",") if part.strip()]
+    return values or list(default)
+
+
+def _is_truthy_env(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _is_loopback_host(host: Optional[str]) -> bool:
+    if not host:
+        return False
+    if host.lower() == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+def _client_is_loopback(raw_request: Request) -> bool:
+    return bool(raw_request.client and _is_loopback_host(raw_request.client.host))
+
+
+def _extract_admin_token(raw_request: Request) -> Optional[str]:
+    header_token = raw_request.headers.get(ADMIN_TOKEN_HEADER)
+    if header_token:
+        return header_token.strip()
+    authorization = raw_request.headers.get("authorization", "")
+    scheme, _, token = authorization.partition(" ")
+    if scheme.lower() == "bearer" and token.strip():
+        return token.strip()
+    return None
+
+
+def require_admin(raw_request: Request) -> None:
+    expected = os.environ.get(ADMIN_TOKEN_ENV, "").strip()
+    if expected:
+        provided = _extract_admin_token(raw_request)
+        if provided and secrets.compare_digest(provided, expected):
+            return
+        raise HTTPException(status_code=401, detail="Valid router admin token required")
+
+    if _client_is_loopback(raw_request):
+        return
+
+    raise HTTPException(
+        status_code=401,
+        detail=f"Router admin token required for non-loopback clients; set {ADMIN_TOKEN_ENV}",
+    )
+
+
+def _is_forbidden_endpoint_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    if ip.is_unspecified or ip.is_multicast:
+        return True
+    if ip.is_link_local and not _is_truthy_env(ALLOW_LINK_LOCAL_ENV):
+        return True
+    return False
+
+
+def _validate_endpoint_host(host: str) -> None:
+    try:
+        addrs = [ipaddress.ip_address(host)]
+    except ValueError:
+        try:
+            infos = socket.getaddrinfo(host, None, type=socket.SOCK_STREAM)
+        except socket.gaierror as e:
+            raise ValueError(f"Endpoint host does not resolve: {host}") from e
+        addrs = []
+        for info in infos:
+            sockaddr = info[4]
+            if sockaddr:
+                addrs.append(ipaddress.ip_address(str(sockaddr[0])))
+
+    if not addrs:
+        raise ValueError(f"Endpoint host does not resolve: {host}")
+
+    for addr in addrs:
+        if _is_forbidden_endpoint_ip(addr):
+            raise ValueError(f"Endpoint host resolves to a forbidden address: {addr}")
+
+
+def normalize_endpoint_base_url(raw_base_url: str) -> str:
+    raw = str(raw_base_url).strip()
+    parsed = urlparse(raw)
+
+    if parsed.scheme not in {"http", "https"}:
+        raise ValueError("base_url must start with http:// or https://")
+    if not parsed.hostname:
+        raise ValueError("base_url must include a host")
+    if parsed.username or parsed.password:
+        raise ValueError("base_url must not include credentials")
+    if parsed.query or parsed.fragment:
+        raise ValueError("base_url must not include query string or fragment")
+    if parsed.path not in {"", "/"}:
+        raise ValueError("base_url must point to the endpoint root, not a nested path")
+    try:
+        port = parsed.port
+    except ValueError as e:
+        raise ValueError("base_url port must be in 1..65535") from e
+    if port is not None and not (0 < int(port) < 65536):
+        raise ValueError("base_url port must be in 1..65535")
+
+    _validate_endpoint_host(parsed.hostname)
+
+    host = parsed.hostname
+    if ":" in host and not host.startswith("["):
+        host = f"[{host}]"
+    netloc = f"{host}:{port}" if port is not None else host
+    return urlunparse((parsed.scheme, netloc, "", "", "", "")).rstrip("/")
 
 
 @dataclass
@@ -358,9 +482,7 @@ class EndpointRegistry:
         status_error: Optional[str] = None,
         status_ts: Optional[float] = None,
     ) -> Endpoint:
-        base_url = base_url.strip().rstrip("/")
-        if not base_url.startswith("http://") and not base_url.startswith("https://"):
-            raise ValueError("base_url must start with http:// or https://")
+        base_url = normalize_endpoint_base_url(base_url)
         async with self._lock:
             existing = self._endpoints.get(base_url)
             if existing is not None:
@@ -387,14 +509,14 @@ class EndpointRegistry:
             return ep
 
     async def unregister(self, *, base_url: str) -> int:
+        base_url = normalize_endpoint_base_url(base_url)
         async with self._lock:
-            base_url = base_url.strip().rstrip("/")
             removed = 1 if self._endpoints.pop(base_url, None) is not None else 0
             self._throughput_buckets.pop(base_url, None)
             return removed
 
     async def set_endpoint_enabled(self, *, base_url: str, enabled: bool) -> Endpoint:
-        base_url = base_url.strip().rstrip("/")
+        base_url = normalize_endpoint_base_url(base_url)
         async with self._lock:
             ep = self._endpoints.get(base_url)
             if ep is None:
@@ -440,7 +562,7 @@ class EndpointRegistry:
 
     async def probe_endpoint_status(
         self, base_url: str
-    ) -> Tuple[bool, Optional[str], Optional[str]]:
+    ) -> Tuple[bool, Optional[str], Optional[int], Optional[str]]:
         """
         Probe downstream readiness via GET {base_url}{status_check_path}.
 
@@ -630,8 +752,8 @@ async def lifespan(_: FastAPI):
 app = FastAPI(lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origins=_env_csv("PARALLAX_ROUTER_CORS_ORIGINS", DEFAULT_CORS_ORIGINS),
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -802,7 +924,9 @@ async def health() -> JSONResponse:
 
 
 @app.post("/endpoint/enabled")
-async def set_endpoint_enabled(raw_request: Request) -> JSONResponse:
+async def set_endpoint_enabled(
+    raw_request: Request, _: None = Depends(require_admin)
+) -> JSONResponse:
     """
     Enable/disable an endpoint without unregistering it.
 
@@ -824,11 +948,15 @@ async def set_endpoint_enabled(raw_request: Request) -> JSONResponse:
         ep = await registry.set_endpoint_enabled(base_url=str(base_url), enabled=enabled)
     except KeyError as e:
         raise HTTPException(status_code=404, detail=str(e)) from e
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
     return JSONResponse(content={"base_url": ep.base_url, "enabled": ep.enabled})
 
 
 @app.get("/balancer/config")
-async def get_balancer_config() -> JSONResponse:
+async def get_balancer_config(
+    raw_request: Request, _: None = Depends(require_admin)
+) -> JSONResponse:
     """
     Example:
       curl -sS http://127.0.0.1:8081/balancer/config
@@ -837,7 +965,9 @@ async def get_balancer_config() -> JSONResponse:
 
 
 @app.post("/balancer/config")
-async def set_balancer_config(raw_request: Request) -> JSONResponse:
+async def set_balancer_config(
+    raw_request: Request, _: None = Depends(require_admin)
+) -> JSONResponse:
     """
     Example:
       curl -sS -X POST http://127.0.0.1:8081/balancer/config \
@@ -855,7 +985,7 @@ async def set_balancer_config(raw_request: Request) -> JSONResponse:
 
 
 @app.post("/register")
-async def register(raw_request: Request) -> JSONResponse:
+async def register(raw_request: Request, _: None = Depends(require_admin)) -> JSONResponse:
     """
     Example:
       curl -sS -X POST http://127.0.0.1:8081/register \
@@ -866,7 +996,10 @@ async def register(raw_request: Request) -> JSONResponse:
     base_url = payload.get("endpoint") or payload.get("base_url")
     if not base_url:
         raise HTTPException(status_code=400, detail="Missing endpoint/base_url")
-    base_url = str(base_url).strip().rstrip("/")
+    try:
+        base_url = normalize_endpoint_base_url(str(base_url))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
     # Readiness check before registering (use the same path/logic as routing).
     ok, status_val, max_running_request, err = await registry.probe_endpoint_status(base_url)
@@ -889,7 +1022,7 @@ async def register(raw_request: Request) -> JSONResponse:
 
 
 @app.post("/unregister")
-async def unregister(raw_request: Request) -> JSONResponse:
+async def unregister(raw_request: Request, _: None = Depends(require_admin)) -> JSONResponse:
     """
     Example:
       curl -sS -X POST http://127.0.0.1:8081/unregister \
@@ -900,12 +1033,15 @@ async def unregister(raw_request: Request) -> JSONResponse:
     base_url = payload.get("endpoint") or payload.get("base_url")
     if not base_url:
         raise HTTPException(status_code=400, detail="Missing endpoint/base_url")
-    removed = await registry.unregister(base_url=str(base_url))
+    try:
+        removed = await registry.unregister(base_url=str(base_url))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
     return JSONResponse(content={"removed": removed})
 
 
 @app.get("/endpoints")
-async def endpoints() -> JSONResponse:
+async def endpoints(raw_request: Request, _: None = Depends(require_admin)) -> JSONResponse:
     """
     Example:
       curl -sS http://127.0.0.1:8081/endpoints
@@ -914,7 +1050,7 @@ async def endpoints() -> JSONResponse:
 
 
 @app.post("/weight/refit")
-async def weight_refit(raw_request: Request) -> JSONResponse:
+async def weight_refit(raw_request: Request, _: None = Depends(require_admin)) -> JSONResponse:
     """
     Example:
       curl -sS -X POST http://127.0.0.1:3001/weight/refit \

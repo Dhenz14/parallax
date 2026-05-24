@@ -209,6 +209,40 @@
         return d.toLocaleString();
       }
 
+      function escapeHtml(value) {
+        return String(value)
+          .replace(/&/g, "&amp;")
+          .replace(/</g, "&lt;")
+          .replace(/>/g, "&gt;")
+          .replace(/"/g, "&quot;")
+          .replace(/'/g, "&#39;");
+      }
+
+      function escapeAttr(value) {
+        return escapeHtml(value).replace(/`/g, "&#96;");
+      }
+
+      function adminTokenHeaders() {
+        const token = window.localStorage.getItem("parallax_router_admin_token") || "";
+        return token ? { "Authorization": `Bearer ${token}` } : {};
+      }
+
+      async function authFetch(path, options = {}) {
+        const headers = { ...(options.headers || {}), ...adminTokenHeaders() };
+        let resp = await fetch(path, { ...options, headers });
+        if (resp.status === 401 || resp.status === 403) {
+          const token = window.prompt("Router admin token:", "");
+          if (token) {
+            window.localStorage.setItem("parallax_router_admin_token", token);
+            resp = await fetch(path, {
+              ...options,
+              headers: { ...(options.headers || {}), "Authorization": `Bearer ${token}` },
+            });
+          }
+        }
+        return resp;
+      }
+
       async function loadOnce() {
         const prevScrollX = window.scrollX;
         const prevScrollY = window.scrollY;
@@ -216,7 +250,7 @@
         const tbody = document.getElementById("tbody");
         const t0 = performance.now();
         try {
-          const resp = await fetch("/endpoints", { cache: "no-store" });
+          const resp = await authFetch("/endpoints", { cache: "no-store" });
           const text = await resp.text();
           if (!resp.ok) throw new Error(`HTTP ${resp.status}: ${text}`);
           const data = JSON.parse(text);
@@ -241,9 +275,12 @@
             tr.className = "dataRow";
             if (!enabled) tr.classList.add("disabledRow");
             tr.setAttribute("data-base-url", baseUrl);
+            const baseUrlHtml = escapeHtml(baseUrl);
+            const baseUrlAttr = escapeAttr(baseUrl);
+            const statusErrorHtml = m.last_status_error ? escapeHtml(m.last_status_error) : "-";
             tr.innerHTML = `
               <td>
-                <code>${baseUrl}</code>
+                <code>${baseUrlHtml}</code>
               </td>
               <td>${m.inflight ?? "-"}</td>
               <td>${m.max_running_request ?? "-"}</td>
@@ -254,10 +291,10 @@
               <td>${fmtNum(m.throughput_tok_s)}</td>
               <td class="scoreCol">${fmtNum(ep.score)}</td>
               <td class="${cls}">${statusText}</td>
-              <td class="muted">${m.last_status_error ? String(m.last_status_error) : "-"}</td>
+              <td class="muted">${statusErrorHtml}</td>
               <td class="muted">${fmtTs(m.last_status_ts)}</td>
               <td class="cellCenter actionCol">
-                <button class="iconBtn tiny unregBtn" data-base-url="${baseUrl.replace(/"/g, "&quot;")}" title="Unregister" aria-label="Unregister">
+                <button class="iconBtn tiny unregBtn" data-base-url="${baseUrlAttr}" title="Unregister" aria-label="Unregister">
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                     <path d="M3 6h18"></path>
                     <path d="M8 6V4h8v2"></path>
@@ -269,7 +306,7 @@
               </td>
               <td class="cellCenter actionCol">
                 <label class="switch tiny" title="Enable/disable" aria-label="Enable/disable">
-                  <input class="enableToggle" type="checkbox" ${enabled ? "checked" : ""} data-base-url="${baseUrl.replace(/"/g, "&quot;")}">
+                  <input class="enableToggle" type="checkbox" ${enabled ? "checked" : ""} data-base-url="${baseUrlAttr}">
                   <span class="slider"></span>
                 </label>
               </td>
@@ -288,21 +325,24 @@
               const thrArrRaw = thrArrFull.length > thrWindowSec ? thrArrFull.slice(-thrWindowSec) : thrArrFull;
               const thrComp = compressZeroRunsWithIndex(thrArrRaw, { minRun: 20 });
               const thrStartSec = (thr && Number.isFinite(thr.start_sec)) ? Number(thr.start_sec) : null;
+              const ttftKey = escapeAttr(`${baseUrl}::ttft_ms`);
+              const tpotKey = escapeAttr(`${baseUrl}::tpot_ms`);
+              const throughputKey = escapeAttr(`${baseUrl}::throughput`);
               tr2.innerHTML = `
                 <td colspan="${colCount}">
                   <div class="chartWrap">
                     <div class="chartRow">
                       <div class="chartBox">
                         <div class="chartTitle"><span>TTFT (ms)</span><span>${samples.length} pts</span></div>
-                        <canvas class="chartCanvas" data-source="samples" data-kind="ttft_ms" data-chart-key="${baseUrl}::ttft_ms"></canvas>
+                        <canvas class="chartCanvas" data-source="samples" data-kind="ttft_ms" data-chart-key="${ttftKey}"></canvas>
                       </div>
                       <div class="chartBox">
                         <div class="chartTitle"><span>TPOT (ms)</span><span>${samples.length} pts</span></div>
-                        <canvas class="chartCanvas" data-source="samples" data-kind="tpot_ms" data-chart-key="${baseUrl}::tpot_ms"></canvas>
+                        <canvas class="chartCanvas" data-source="samples" data-kind="tpot_ms" data-chart-key="${tpotKey}"></canvas>
                       </div>
                       <div class="chartBox">
                         <div class="chartTitle"><span>Throughput (tok/s)</span><span>${thrComp.vals.length} pts (compressed)</span></div>
-                        <canvas class="chartCanvas" data-source="throughput" data-kind="tok_s" data-chart-key="${baseUrl}::throughput" data-start-sec="${thrStartSec === null ? "" : String(thrStartSec)}" data-idx="${thrComp.idx.join(",")}"></canvas>
+                        <canvas class="chartCanvas" data-source="throughput" data-kind="tok_s" data-chart-key="${throughputKey}" data-start-sec="${thrStartSec === null ? "" : String(thrStartSec)}" data-idx="${thrComp.idx.join(",")}"></canvas>
                       </div>
                     </div>
                   </div>
@@ -414,7 +454,7 @@
       });
 
       async function postJson(path, payload) {
-        const resp = await fetch(path, {
+        const resp = await authFetch(path, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(payload),
@@ -447,7 +487,7 @@
       async function loadConfig() {
         const el = document.getElementById("cfgStatus");
         try {
-          const resp = await fetch("/balancer/config", { cache: "no-store" });
+          const resp = await authFetch("/balancer/config", { cache: "no-store" });
           const txt = await resp.text();
           if (!resp.ok) throw new Error(`HTTP ${resp.status}: ${txt}`);
           const data = JSON.parse(txt);

@@ -6,7 +6,17 @@ import sys
 
 import pytest
 
-from parallax.utils.utils import get_current_device, is_metal_available
+try:
+    from parallax.utils.utils import get_current_device, is_metal_available
+except ModuleNotFoundError as exc:
+    if exc.name != "mlx":
+        raise
+
+    def get_current_device():
+        return "cpu"
+
+    def is_metal_available():
+        return False
 
 
 def pytest_configure(config):
