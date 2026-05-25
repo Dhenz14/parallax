@@ -24,9 +24,11 @@ To allow the API to be accessible from other machines, add the argument `--host 
 parallax run --host 0.0.0.0
 ```
 
-When running `parallax run` for the first time or after an update, the code version info might be sent to help improve the project. To disable this, use the `-u` flag:
+The Hive fork does not send package version info by default. If an operator
+intentionally wants upload receipts, set `PARALLAX_PACKAGE_INFO_UPLOAD_URL` and
+opt in explicitly:
 ```sh
-parallax run -u
+PARALLAX_PACKAGE_INFO_UPLOAD_URL=https://example.invalid/parallax/upload parallax run --upload-package-info
 ```
 
 #### Step 2: Set cluster and model config
@@ -57,9 +59,10 @@ parallax join -s 12D3KooWLX7MWuzi1Txa5LyZS4eTQ2tPaJijheH8faHggB9SxnBu
 
 You should see your nodes start to show up with their status. Wait until all nodes are successfully connected, and you will automatically be directed to the chat interface.
 
-When running `parallax join` for the first time or after an update, the code version info might be sent to help improve the project. To disable this, use the `-u` flag:
+The same upload posture applies to worker nodes: no package-info upload happens
+unless the operator supplies `PARALLAX_PACKAGE_INFO_UPLOAD_URL` and opts in.
 ```sh
-parallax join -u
+PARALLAX_PACKAGE_INFO_UPLOAD_URL=https://example.invalid/parallax/upload parallax join --upload-package-info
 ```
 
 #### Step 4: Chat

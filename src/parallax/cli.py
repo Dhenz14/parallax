@@ -172,10 +172,15 @@ def _get_relay_params():
     ]
 
 
+def _should_upload_package_info(args) -> bool:
+    return bool(getattr(args, "upload_package_info", False)) and not bool(
+        getattr(args, "skip_upload", False)
+    )
+
+
 def run_command(args, passthrough_args: list[str] | None = None):
     """Run the scheduler (equivalent to scripts/start.sh)."""
-    if not args.skip_upload:
-        update_package_info()
+    update_package_info(allow_upload=_should_upload_package_info(args))
 
     check_python_version()
 
@@ -212,8 +217,7 @@ def run_command(args, passthrough_args: list[str] | None = None):
 
 def join_command(args, passthrough_args: list[str] | None = None):
     """Join a distributed cluster (equivalent to scripts/join.sh)."""
-    if not args.skip_upload:
-        update_package_info()
+    update_package_info(allow_upload=_should_upload_package_info(args))
 
     check_python_version()
 
@@ -295,7 +299,7 @@ def chat_command(args, passthrough_args: list[str] | None = None):
     _execute_with_graceful_shutdown(cmd)
 
 
-def update_package_info():
+def update_package_info(*, allow_upload: bool = False):
     """Update package information."""
     version = get_current_version()
 
@@ -304,7 +308,7 @@ def update_package_info():
         if package_info is not None and package_info["version"] == version:
             return
 
-        save_package_info({"version": version})
+        save_package_info({"version": version}, allow_upload=allow_upload)
     except Exception:
         pass
 
@@ -321,26 +325,30 @@ def load_package_info():
         return None
 
 
-def save_package_info(usage_info: dict):
+def save_package_info(usage_info: dict, *, allow_upload: bool = False):
     """Save package information."""
     project_root = get_project_root()
     os.makedirs(project_root / ".cache", exist_ok=True)
     with open(project_root / ".cache" / "tmp_key.txt", "w") as f:
         f.write(reversible_encode_string(json.dumps(usage_info)))
 
-    upload_package_info(usage_info)
+    if allow_upload:
+        upload_package_info(usage_info)
 
 
-def upload_package_info(usage_info: dict):
-    post_url = "https://chatbe-dev.gradient.network/api/v1/parallax/upload"
+def upload_package_info(usage_info: dict) -> bool:
+    post_url = os.environ.get("PARALLAX_PACKAGE_INFO_UPLOAD_URL", "").strip()
+    if not post_url:
+        return False
+
     headers = {
         "Content-Type": "application/json",
     }
     try:
         requests.post(post_url, headers=headers, json=usage_info, timeout=5)
-        return
+        return True
     except Exception:
-        return
+        return False
 
 
 def reversible_encode_string(s: str) -> str:
@@ -381,6 +389,11 @@ Examples:
     run_parser.add_argument(
         "-u", "--skip-upload", action="store_true", help="Skip upload package info"
     )
+    run_parser.add_argument(
+        "--upload-package-info",
+        action="store_true",
+        help="Opt in to package-info upload using PARALLAX_PACKAGE_INFO_UPLOAD_URL",
+    )
 
     # Add 'join' command parser
     join_parser = subparsers.add_parser(
@@ -398,6 +411,11 @@ Examples:
     )
     join_parser.add_argument(
         "-u", "--skip-upload", action="store_true", help="Skip upload package info"
+    )
+    join_parser.add_argument(
+        "--upload-package-info",
+        action="store_true",
+        help="Opt in to package-info upload using PARALLAX_PACKAGE_INFO_UPLOAD_URL",
     )
 
     # Add 'chat' command parser

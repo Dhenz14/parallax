@@ -1,6 +1,10 @@
 import importlib.metadata
 import json
+import os
 import urllib.request
+
+
+DEFAULT_RELEASE_API_URL = "https://api.github.com/repos/Dhenz14/parallax/releases/latest"
 
 
 def get_current_version():
@@ -23,9 +27,9 @@ def check_latest_release():
     If not, print an update notification.
     """
     version = get_current_version()
-    GITHUB_API = "https://api.github.com/repos/GradientHQ/parallax/releases/latest"
+    release_api_url = os.environ.get("PARALLAX_RELEASE_API_URL", DEFAULT_RELEASE_API_URL)
     try:
-        with urllib.request.urlopen(GITHUB_API, timeout=4) as response:
+        with urllib.request.urlopen(release_api_url, timeout=4) as response:
             data = json.loads(response.read())
             latest = data.get("tag_name") or data.get("name")
             if latest:

@@ -28,6 +28,32 @@ REQUIRED = {
         "upstream GradientHQ Parallax install paths",
         "git clone https://github.com/GradientHQ/parallax.git",
     ],
+    "docs/user_guide/quick_start.md": [
+        "The Hive fork does not send package version info by default",
+        "PARALLAX_PACKAGE_INFO_UPLOAD_URL",
+        "--upload-package-info",
+    ],
+    "src/parallax_utils/version_check.py": [
+        "DEFAULT_RELEASE_API_URL = \"https://api.github.com/repos/Dhenz14/parallax/releases/latest\"",
+        "PARALLAX_RELEASE_API_URL",
+    ],
+    "src/parallax/cli.py": [
+        "PARALLAX_PACKAGE_INFO_UPLOAD_URL",
+        "--upload-package-info",
+    ],
+}
+
+FORBIDDEN = {
+    "src/parallax_utils/version_check.py": [
+        "https://api.github.com/repos/GradientHQ/parallax/releases/latest",
+    ],
+    "src/parallax/cli.py": [
+        "https://chatbe-dev.gradient.network/api/v1/parallax/upload",
+    ],
+    "docs/user_guide/quick_start.md": [
+        "code version info might be sent",
+        "To disable this, use the `-u` flag",
+    ],
 }
 
 
@@ -38,6 +64,11 @@ def main() -> int:
         for needle in needles:
             if needle not in text:
                 missing.append(f"{rel}: {needle}")
+    for rel, needles in FORBIDDEN.items():
+        text = (ROOT / rel).read_text(encoding="utf-8")
+        for needle in needles:
+            if needle in text:
+                missing.append(f"{rel}: forbidden stale upstream runtime text {needle}")
 
     if missing:
         for item in missing:
