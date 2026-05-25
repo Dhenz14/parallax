@@ -28,6 +28,12 @@
 | [**Discord**](https://discord.gg/parallaxai)
 | [**Arxiv**](https://arxiv.org/pdf/2509.26182v1)
 
+> **Hive ecosystem fork boundary:** `Dhenz14/parallax` is a Hive operator fork
+> of GradientHQ Parallax. Gradient links, badges, Docker images, and Windows
+> installers remain upstream Parallax provenance. Hive-specific capability and
+> feature claims belong in the consuming Hive repos (Hive-AI, HivePoA,
+> NeuraChain, Hive IDE), not in this upstream-derived serving engine.
+
 ## News
 - [2026/2] 🦞 Parallax now supports OpenClaw integration! See [Docs](./docs/user_guide/work_with_openclaw.md)
 - [2025/10] 🔥 Parallax won #1 Product of The Day on Product Hunt!

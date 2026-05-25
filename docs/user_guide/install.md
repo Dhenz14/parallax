@@ -14,6 +14,18 @@ Below are installation methods for different operating systems.
 |macOS | ❌️ | ✅️ | ❌️ |
 
 ### From Source
+
+Hive operators working from the `Dhenz14/parallax` fork should clone that fork
+for reproducible local integration work:
+
+```sh
+git clone https://github.com/Dhenz14/parallax.git
+cd parallax
+```
+
+The commands below are the upstream GradientHQ Parallax install paths for
+general users.
+
 #### For Linux/WSL (GPU):
 Note: If you are using DGX Spark, please refer to the Docker installation section
 ```sh
